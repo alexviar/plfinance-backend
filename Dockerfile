@@ -1,85 +1,61 @@
-# deploy/Dockerfile
+# Estágio de construção
+FROM php:8.2-fpm AS builder
 
-# stage 1: build stage
-FROM php:8.3-fpm-alpine as build
-
-# installing system dependencies and php extensions
-RUN apk add --no-cache \
-    zip \
-    libzip-dev \
-    freetype \
-    libjpeg-turbo \
-    libpng \
-    freetype-dev \
-    libjpeg-turbo-dev \
+# Instalar dependencias del sistema
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
     libpng-dev \
-    nodejs \
-    npm \
-    && docker-php-ext-configure zip \
-    && docker-php-ext-install zip pdo pdo_mysql \
-    && docker-php-ext-configure gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ \
-    && docker-php-ext-install -j$(nproc) gd \
-    && docker-php-ext-enable gd
+    libonig-dev \
+    libxml2-dev \
+    zip \
+    unzip \
+    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd \
+    && docker-php-ext-configure gd
 
-# install composer
-COPY --from=composer:2.7.6 /usr/bin/composer /usr/bin/composer
+# Instalar Node.js 18.x
+RUN curl -sL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs
 
-WORKDIR /var/www/html
+# Instalar Composer
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
-# copy necessary files and change permissions
+# Directorio de trabajo
+WORKDIR /var/www
+
+# Copiar archivos de dependencias
+COPY composer.json composer.lock package.json package-lock.json ./
+
+# Instalar dependencias PHP
+RUN composer install --no-interaction --no-scripts --no-autoloader
+
+# Instalar dependencias Node.js
+RUN npm install
+
+# Copiar todo el proyecto
 COPY . .
-RUN chown -R www-data:www-data /var/www/html \
-    && chmod -R 775 /var/www/html/storage \
-    && chmod -R 775 /var/www/html/bootstrap/cache
 
-# install php and node.js dependencies
-RUN composer install --no-dev --prefer-dist \
-    && npm install \
+# Generar autoload y optimizar
+RUN composer dump-autoload --optimize \
+    && composer install --no-interaction \
     && npm run build
 
-RUN chown -R www-data:www-data /var/www/html/vendor \
-    && chmod -R 775 /var/www/html/vendor
+# Establecer permisos
+RUN chown -R www-data:www-data /var/www/storage /var/www/bootstrap/cache
 
-# stage 2: production stage
-FROM php:8.3-fpm-alpine
+# Estágio final
+FROM php:8.2-fpm
 
-# install nginx
-RUN apk add --no-cache \
-    zip \
-    libzip-dev \
-    freetype \
-    libjpeg-turbo \
-    libpng \
-    freetype-dev \
-    libjpeg-turbo-dev \
+# Copiar desde el builder
+COPY --from=builder /var/www /var/www
+
+# Instalar dependencias runtime
+RUN apt-get update && apt-get install -y \
     libpng-dev \
-    oniguruma-dev \
-    gettext-dev \
-    freetype-dev \
-    nginx \
-    && docker-php-ext-configure zip \
-    && docker-php-ext-install zip pdo pdo_mysql \
-    && docker-php-ext-configure gd --with-freetype=/usr/include/ --with-jpeg=/usr/include/ \
-    && docker-php-ext-install -j$(nproc) gd \
-    && docker-php-ext-enable gd \
-    && docker-php-ext-install bcmath \
-    && docker-php-ext-enable bcmath \
-    && docker-php-ext-install exif \
-    && docker-php-ext-enable exif \
-    && docker-php-ext-install gettext \
-    && docker-php-ext-enable gettext \
-    && docker-php-ext-install opcache \
-    && docker-php-ext-enable opcache \
-    && rm -rf /var/cache/apk/*
+    libonig-dev \
+    libxml2-dev \
+    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# copy files from the build stage
-COPY --from=build /var/www/html /var/www/html
-COPY ./deploy/nginx.conf /etc/nginx/http.d/default.conf
-COPY ./deploy/php.ini "$PHP_INI_DIR/conf.d/app.ini"
-
-WORKDIR /var/www/html
-
-# add all folders where files are being stored that require persistence. if needed, otherwise remove this line.
-VOLUME ["/var/www/html/storage/app"]
-
-CMD ["sh", "-c", "nginx && php-fpm"]
+WORKDIR /var/www
