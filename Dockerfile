@@ -1,61 +1,27 @@
-# Estágio de construção
-FROM php:8.2-fpm AS builder
+FROM php:8.2-fpm-alpine
 
-# Instalar dependencias del sistema
-RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    libpng-dev \
-    libonig-dev \
-    libxml2-dev \
+WORKDIR /var/www/html
+
+RUN apk add --no-cache \
+    libzip-dev \
     zip \
     unzip \
-    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd \
-    && docker-php-ext-configure gd
+    nginx \
+    supervisor
 
-# Instalar Node.js 18.x
-RUN curl -sL https://deb.nodesource.com/setup_18.x | bash - \
-    && apt-get install -y nodejs
+RUN docker-php-ext-install pdo pdo_mysql zip
 
-# Instalar Composer
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
-# Directorio de trabajo
-WORKDIR /var/www
-
-# Copiar archivos de dependencias
-COPY composer.json composer.lock package.json package-lock.json ./
-
-# Instalar dependencias PHP
-RUN composer install --no-interaction --no-scripts --no-autoloader
-
-# Instalar dependencias Node.js
-RUN npm install
-
-# Copiar todo el proyecto
 COPY . .
 
-# Generar autoload y optimizar
-RUN composer dump-autoload --optimize \
-    && composer install --no-interaction \
-    && npm run build
+RUN composer install --optimize-autoloader --no-dev
 
-# Establecer permisos
-RUN chown -R www-data:www-data /var/www/storage /var/www/bootstrap/cache
+RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
 
-# Estágio final
-FROM php:8.2-fpm
+COPY ./docker/nginx.conf /etc/nginx/nginx.conf
+COPY ./docker/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Copiar desde el builder
-COPY --from=builder /var/www /var/www
+EXPOSE 9000
 
-# Instalar dependencias runtime
-RUN apt-get update && apt-get install -y \
-    libpng-dev \
-    libonig-dev \
-    libxml2-dev \
-    && docker-php-ext-install pdo_mysql mbstring exif pcntl bcmath gd \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /var/www
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
